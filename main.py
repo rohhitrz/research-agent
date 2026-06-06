@@ -52,3 +52,74 @@ def save_memory(messages: list)->list:
     
     with open(MEMORY_FILE, 'w') as f:
         json.dump(serializable, f, indent=2)
+
+# ─── INPUT VALIDATION ─────────────────────────────────────────────────────────
+
+def validateInput(user_message:str)->str:
+    if len(user_message)>1000:
+        raise ValueError("Input too long, Max 1000 charcters")
+    
+    suspicious= ["ignore all instructions","ignore previous","new instruction", "disregard", "you are now"]
+
+    lower=user_message.lower()
+    for phrase in suspicious:
+        if phrase in lower:
+            raise ValueError("Invalid input detected.")
+    
+    return user_message.strip()
+
+# ─── TOOLS ────────────────────────────────────────────────────────────────────
+
+def web_search(query: str)->str:
+    try:
+        response=TavilyClient.search(query=query, max_results=3)
+        results=[]
+        for r in response["results"]:
+            results.append(f"Title: {r['title']}\nURL: {r['url']}\nSummary: {r['content']}\n")
+        return "\n---\n".join(results)
+    except Exception as e:
+        logger.error(f"web search failed: {e}")
+        return f"TOOL_ERROR: Web search failed — {str(e)}. Use your training data instead."
+
+def calculator(expression: str)->str:
+    try:
+        return str(eval(expression))
+    except Exception as e:
+        return f"Error: {e}"
+
+tools = [
+    {
+        "type": "function",
+        "function": {
+            "name": "web_search",
+            "description": "Search the web for current, real-time information. Use this for news, prices, recent events, or anything that needs up to date data.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "The search query"}
+                },
+                "required": ["query"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "calculator",
+            "description": "Evaluate a math expression e.g. 2 + 2 or 10 * 5",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "expression": {"type": "string", "description": "A math expression to evaluate"}
+                },
+                "required": ["expression"]
+            }
+        }
+    }
+]
+
+tool_map = {
+    "web_search": web_search,
+    "calculator": calculator,
+}
+
