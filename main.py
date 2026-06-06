@@ -7,7 +7,8 @@ from dotenv import load_dotenv
 from tavily import TavilyClient
 from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import BaseMode
+from fastapi.responses import FileResponse
+from pydantic import BaseModel
 
 load_dotenv()
 client= OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
@@ -55,7 +56,7 @@ def save_memory(messages: list)->list:
 
 # ─── INPUT VALIDATION ─────────────────────────────────────────────────────────
 
-def validateInput(user_message:str)->str:
+def validate_input(user_message:str)->str:
     if len(user_message)>1000:
         raise ValueError("Input too long, Max 1000 charcters")
     
@@ -123,3 +124,128 @@ tool_map = {
     "calculator": calculator,
 }
 
+# ─── LLM WITH RETRY ───────────────────────────────────────────────────────────
+
+def call_llm_with_retry(messages: list, max_retries: int=3):
+
+    for attempt in range(max_retries):
+        try:
+            return client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=messages,
+                tools=tools,
+                timeout=30
+            )
+        except Exception as e:
+            if attempt==max_retries-1:
+                raise e
+            wait= 2 ** attempt
+            logger.warning(f"LLM call failed, retrying in {wait}s: {e}")
+            time.sleep(wait)
+
+
+# ─── AGENT ────────────────────────────────────────────────────────────────────
+
+def run_agent(user_message: str)->str:
+    logger.info(f"User: {user_message[:50]}")
+
+    # Load memory from disk
+    messages=load_memory()
+
+    messages.append({"role":"user", "content": user_message})
+
+    steps=0
+    total_tokens=0
+    tools_used=[]
+
+    while True:
+        # infinite Loop Protection
+        if steps >=10:
+            logger.warning("Max  steps reached")
+            return{
+                "response": "I needed too many steps for this. Try a simpler question.",
+                "tokens": total_tokens,
+                "cost": round((total_tokens / 1_000_000) * 0.15, 4),
+                "tools_used": tools_used,
+                "steps": steps
+            }
+        
+        steps+=1
+        response= call_llm_with_retry(messages)
+        total_tokens+=response.usage.total_tokens
+
+        assistant_message=response.choices[0].message
+        messages.append(assistant_message)
+
+        if assistant_message.tool_calls:
+            for tool_call in assistant_message.tool_calls:
+                tool_name=tool_call.function.name
+                tool_args=json.loads(tool_call.function.arguments)
+
+                logger.info(f"Tool: {tool_name}-{tool_args}")
+                tools_used.append(tool_name)
+
+                tool_result = tool_map[tool_name](**tool_args)
+
+                messages.append({
+                    "role": "tool",
+                    "content": tool_result,
+                    "tool_call_id": tool_call.id
+                })
+        
+        else:
+            save_memory(messages)
+
+            cost=round((total_tokens/1_000_000)*0.15,4)
+            logger.info(f"Done — {steps} steps, {total_tokens} tokens, ${cost}")
+
+            return {
+                "response": assistant_message.content,
+                "tokens": total_tokens,
+                "cost": cost,
+                "tools_used": tools_used,
+                "steps": steps
+            }
+
+# ─── API ROUTES ───────────────────────────────────────────────────────────────
+
+class chatRequest(BaseModel):
+    message: str
+
+@app.get("/")
+def serve_frontend():
+    return FileResponse("index.html")
+
+@app.post("/chat")
+def chat(request: chatRequest):
+    # validate input
+    try:
+        message=validate_input(request.message)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    
+    # Run agent
+    try:
+        result=run_agent(message)
+        return result
+    except Exception as e:
+        logger.error(f"Agent error: {e}")
+        raise HTTPException(status_code=500, detail="Agent encountered an error. Please try again.")
+
+@app.delete("/memory")
+def clear_memory():
+    if os.path.exists(MEMORY_FILE):
+        os.remove(MEMORY_FILE)
+    logger.info("Memory cleared")
+    return {"message": "Memory cleared successfully"}
+
+
+
+
+
+
+
+
+    
+
+    
