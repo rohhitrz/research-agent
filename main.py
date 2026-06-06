@@ -27,3 +27,28 @@ logging. basicConfig(
 logger=logging.getLogger(__name__)
 
 # ─── FASTAPI APP ──────────────────────────────────────────────────────────────
+
+app=FastAPI(title="Research Agent")
+
+# ─── MEMORY ───────────────────────────────────────────────────────────────────
+
+MEMORY_FILE = "memory.json"
+
+
+def load_memory()-> list:
+    if os.path.exists(MEMORY_FILE):
+        with open(MEMORY_FILE, 'r') as f:
+            return json.load(f)
+    
+    return [{'role':'system', 'content': "You are a helpful research agent. Use web search to find accurate, current information. Always be concise and factual. If you use the calculator, show your working."}]
+
+def save_memory(messages: list)->list:
+    serializable=[]
+    for m in messages:
+        if hasattr(m, "model_dump"):
+            serializable.append(m.model_dump())
+        else:
+            serializable.append(m)
+    
+    with open(MEMORY_FILE, 'w') as f:
+        json.dump(serializable, f, indent=2)
